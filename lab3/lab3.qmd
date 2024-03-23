@@ -1,0 +1,168 @@
+---
+title: "Применение технологий ИИ и машинного обучения для поиска угроз ИБ"
+author: "Zhidkov Georgy"
+format: 
+    md:
+        output-file: README.md
+---
+
+Лабораторная работа №3
+
+> Анализ данных сетевого трафика при помощи библиотеки Arrow
+
+## Цель
+
+1.  Изучить возможности технологии Apache Arrow для обработки и анализ больших данных
+2.  Получить навыки применения Arrow совместно с языком программирования R
+3.  Получить навыки анализа метаинфомации о сетевом трафике
+4.  Получить навыки применения облачных технологий хранения, подготовки и анализа данных: Yandex Object Storage, Rstudio Server.
+
+## Исходные данные
+
+1.  ОС Windows 11
+2.  RStudio Desktop
+3.  Yandex Cloud: S3 Object Storage
+4.  Yandex Cloud: Yandex Query
+5.  Yandex Cloud: Yandex DataLens
+
+## Описание работы
+
+### Общая ситуация
+
+Вы – специалист по информационной безопасности компании “СуперМегатек”. Вы, являясь специалистом Threat Hunting, часто используете информацию о сетевом трафике для обнаружения подозрительной и вредоносной активности. Помогите защитить Вашу компанию от международной хакерской группировки AnonMasons. У Вас есть данные сетевой активности в корпоративной сети компании “СуперМегатек”. Данные хранятся в Yandex Object Storage.
+
+### Задание
+
+Используя язык программирования R, библиотеку arrow и облачную IDE Rstudio Server, развернутую в Yandex Cloud, выполнить задания и составить отчет.
+
+## Ход работы
+
+### Настройка подключения к RStudio Server
+
+1.  Поменяем права на файле с ssh-ключом, затем, используя его, выполняем вход на сервер по ssh.
+
+![ssh](img/1.png)
+
+2.  Меняем пароль у user14
+
+![passwd](img/2.png)
+
+3.  Заходим в RStudio Server под пользователем user14 по адресу 127.0.0.1:8787
+
+![login](img/3.png)
+
+4.  Настраиваем через Personal Access Tokens доступ к Github
+
+![token](img/4.png)
+
+### Выполняем задания
+
+#### Устанавливаем библиотеки и датасет
+
+```{r}
+library(arrow, warn.conflicts = FALSE)
+```
+
+```{r}
+library(tidyverse, warn.conflicts = FALSE)
+```
+
+```{r}
+dir.create("data", showWarnings = FALSE)
+
+curl::multi_download(
+  "https://storage.yandexcloud.net/arrow-datasets/tm_data.pqt",
+  "data/testdata",
+  resume = TRUE
+)
+```
+
+#### Задание 1: Надите утечку данных из Вашей сети
+
+Важнейшие документы с результатами нашей исследовательской деятельности в области создания вакцин скачиваются в виде больших заархивированных дампов. Один из хостов в нашей сети используется для пересылки этой информации – он пересылает гораздо больше информации на внешние ресурсы в Интернете, чем остальные компьютеры нашей сети. Определите его IP-адрес.
+
+```{r}
+dt <- open_dataset(
+  sources = "data/testdata",
+  schema = schema(timestamp=int64(), src=utf8(), dst=utf8(), port=uint32(), bytes=uint32())
+)
+
+dt %>% glimpse()
+```
+
+
+```{r}
+dataleak_1 <- dt %>%
+  filter(str_detect(src, "^12.") | str_detect(src, "^13.") | str_detect(src, "^14."))  %>%
+  filter(!str_detect(dst, "^12.") | !str_detect(dst, "^13.") | !str_detect(dst, "^14."))  %>%
+  group_by(src) %>% summarise("sum" = sum(bytes)) %>%  
+  filter(sum > 6000000000) %>% select(src,sum)
+
+dataleak_1 |> collect()
+```
+
+Ответ: 13.37.84.125
+
+#### Задание 2: Надите утечку данных 2
+
+Другой атакующий установил автоматическую задачу в системном планировщике cron для экспорта содержимого внутренней wiki системы. Эта система генерирует большое количество трафика в нерабочие часы, больше чем остальные хосты. Определите IP этой системы. Известно, что ее IP адрес отличается от нарушителя из предыдущей задачи.
+
+```{r}
+dataleak_2 <- dt %>%
+      select(timestamp, src, dst, bytes) %>%
+      mutate(trafic = (str_detect(src, "^((12|13|14)\\.)") & !str_detect(dst, "^((12|13|14)\\.)")),time = hour(as_datetime(timestamp/1000))) %>%
+      filter(trafic == TRUE, time >= 0 & time <= 24) %>% group_by(time) %>%
+      summarise(trafictime = n()) %>% arrange(desc(trafictime))
+
+dataleak_2 |> collect()
+```
+
+Учитывая нагрузку на трафик, рабочее время: 16:00-24:00
+
+```{r}
+dataleak_2_2 <- dt %>% mutate(time = hour(as_datetime(timestamp/1000))) %>% 
+  filter(!str_detect(src, "^13.37.84.125")) %>% 
+  filter(str_detect(src, "^12.") | str_detect(src, "^13.") | str_detect(src, "^14."))  %>%
+  filter(!str_detect(dst, "^12.") | !str_detect(dst, "^13.") | !str_detect(dst, "^14."))  %>%
+  filter(time >= 1 & time <= 15) %>% 
+  group_by(src) %>% summarise("sum" = sum(bytes)) %>%
+  filter(sum > 290000000) %>% select(src,sum) 
+
+dataleak_2_2 |> collect()
+```
+
+Ответ: 12.55.77.96
+
+#### Задание 3: Надите утечку данных 3
+
+Еще один нарушитель собирает содержимое электронной почты и отправляет в Интернет используя порт, который обычно используется для другого типа трафика. Атакующий пересылает большое количество информации используя этот порт, которое нехарактерно для других хостов, использующих этот номер порта. Определите IP этой системы. Известно, что ее IP адрес отличается от нарушителей из предыдущих задач
+
+```{r}
+dataleak_3 <- dt %>% filter(!str_detect(src, "^13.37.84.125")) %>% 
+  filter(!str_detect(src, "^12.55.77.96")) %>% 
+  filter(str_detect(src, "^12.") | str_detect(src, "^13.") | str_detect(src, "^14."))  %>%
+  filter(!str_detect(dst, "^12.") | !str_detect(dst, "^13.") | !str_detect(dst, "^14."))  %>% select(src, bytes, port) 
+
+
+dataleak_3_1 <- dataleak_3 %>%  group_by(port) %>% summarise("mean"=mean(bytes), "max"=max(bytes), "sum" = sum(bytes)) %>% 
+  mutate("Raz"= max-mean)  %>% filter(Raz!=0, Raz>170000)
+
+dataleak_3_1 |> collect()
+```
+
+```{r}
+dataleak3_2 <- dataleak_3  %>% filter(port == 37) %>% group_by(src) %>% 
+  summarise("mean" = mean(bytes)) %>% filter(mean > 37543) %>% select(src)
+
+dataleak3_2 |> collect()
+```
+
+Ответ: 13.46.35.35
+
+## Оценка результата
+
+В результате практической работы был проведен анализ сетевой активности с помощью Apache Arrow и были найдены утечки данных.
+
+## Вывод
+
+Мы получили навыки работы с Apache Arrow и RStudio Server
